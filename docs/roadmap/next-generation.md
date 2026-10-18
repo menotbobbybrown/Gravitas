@@ -5,9 +5,12 @@ deduplicated against issue #27. Priority: P0 correctness/security/bench
 blockers, P1 high-impact, P2 experimental, plus research/host/integration.
 
 ## P0 — Correctness / security / benchmark blockers
-- [ ] #27 Bench report pipeline never validates episodes — fixed this session on
-  this branch (schema-gated `cmd_report` + empty/aggregate guards + 4 new
-  tests); pending merge of contributor PR #56 or this branch's equivalent.
+- [ ] #27 Bench report pipeline never validates episodes — fixed on
+  `ascension/phase-b-foundation` (schema-gated `cmd_report` + empty/aggregate
+  guards + regression tests); merge vs contributor PR #56, then close.
+- [ ] #68 Ledger rewrite without anchor passes verification (evidence forgery).
+- [ ] #70 Lifecycle fixture corpus + stale-shim detection (malformed payloads,
+  renames, concurrency, timeouts, uninitialized sessions).
 
 ## P1 — High-impact engineering
 - [x] OpenCode read-before-write parity (shim ledger + session-scoped guard) —
@@ -24,8 +27,9 @@ blockers, P1 high-impact, P2 experimental, plus research/host/integration.
 - [ ] #62 Adversarial verifier (boundary/property/differential checks in sandbox).
 - [ ] #67 Bounded patch tournament for hard bugs (2–3 candidates, isolated worktrees).
 - [ ] #63 Trace linter (repeat-action, thrash, stale-evidence detectors).
-- [ ] Offline harness optimizer (bounded proposals, fixed dev set, human gate) —
-  not yet filed; file after trace linter lands.
+- [ ] #69 Offline harness optimizer (falsifiable contracts + human gate) — do not
+  start before #63 lands.
+- [ ] #71 Canonicalize paths at record time (`good first issue`).
 
 ## Research / replication tasks
 - [ ] #64 Harness-engineering literature verification pass.
@@ -36,9 +40,8 @@ blockers, P1 high-impact, P2 experimental, plus research/host/integration.
 
 ## Host integration
 - [ ] #65 OpenCode `tool.execute.after` payload audit across versions.
-- [ ] Antigravity lifecycle fixture corpus (malformed payloads, renames,
-  concurrent sessions, timeouts) — not yet filed.
+- [ ] #70 Antigravity/OpenCode lifecycle fixture corpus + stale-shim detection.
 
 ## Beginner-friendly
 - [ ] #66 Seeded reproducible benchmark task (licensed repo + hidden validator).
-- [ ] Cross-platform guard tests (path normalization matrix) — not yet filed.
+- [ ] #71 Canonicalize paths at record time (replaces the cross-platform matrix item).
