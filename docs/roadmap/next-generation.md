@@ -19,6 +19,14 @@ blockers, P1 high-impact, P2 experimental, plus research/host/integration.
   read-before-write) — doc fix + re-read-after-resume rule.
 - [ ] #58 Reproducer identity binding (argv-to-contract like validators).
 - [ ] #59 Shell-write freshness invalidation beyond enumerable redirects.
+- [ ] #74 Rule-precedence audit: migrate checkable rules from skill prose to
+  enforcement (Harness-IF: skill text is the lowest-precedence surface).
+- [ ] #75 Scaffold-metric gaps: tokens-per-solve, time-to-solve, failure
+  fingerprints in `metrics.py`.
+- [ ] #76 Corpus contamination-hygiene infra (canaries, provenance registry, CI).
+- [ ] #77 Hidden-test artifact hardening (private worktree root + scrub).
+- [ ] #78 OpenCode completion-event gap (write/shell after-events for freshness).
+- [ ] #80 `resolve-failure` re-arms without mandatory re-verify (F8).
 
 ## P2 — Experimental (feature-flagged)
 - [ ] #60 Task-conditioned context scout (deterministic retrieval, token budgets).
@@ -30,13 +38,15 @@ blockers, P1 high-impact, P2 experimental, plus research/host/integration.
 - [ ] #69 Offline harness optimizer (falsifiable contracts + human gate) — do not
   start before #63 lands.
 - [ ] #71 Canonicalize paths at record time (`good first issue`).
+- [ ] #79 Ablation execution matrix: 6 flash configs x 5 runs, one licensed
+  task (needs declared model budget).
+- [ ] #81 Weak-model progressive disclosure — evaluated on weak backends or dropped.
 
 ## Research / replication tasks
-- [ ] #64 Harness-engineering literature verification pass.
-- [ ] Competitor teardown with pinned commits (SWE-agent, Agentless, aider,
-  gemini-cli, opencode, codex, OpenHands) — not yet filed; file after #64.
-- [ ] Developer-report corpus with anecdotal/reproduced/corroborated labels —
-  fold into competitor teardown issue.
+- [ ] #64 Harness-engineering literature verification pass (abstracts verified;
+  full text open).
+- [ ] #72 Competitor teardown with pinned commits (reuse arXiv:2609.00006 taxonomy).
+- [ ] #73 Developer-report corpus (anecdotal/reproduced/corroborated).
 
 ## Host integration
 - [ ] #65 OpenCode `tool.execute.after` payload audit across versions.

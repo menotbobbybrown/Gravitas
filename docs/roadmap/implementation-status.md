@@ -20,10 +20,10 @@ evidence only.
   winner.
 
 ## In progress
-- GitHub roadmap: 15 issues #57-#71 filed with code-level evidence, attack
+- GitHub roadmap: 25 issues #57-#81 filed with code-level evidence, attack
   sketches, acceptance criteria and verified references. #64 tracks the
   full-text literature pass; #70 the lifecycle corpus; #66 the first
-  licensed-task bar.
+  licensed-task bar; #79 the first ablation experiment (needs model budget).
 - Recovery-doc contradiction fix (F9, #57) — unassigned.
 - Full-text paper review (#64) — unassigned; contributor-ready in small batches.
 
