@@ -45,6 +45,52 @@ class BenchmarkRunnerTests(unittest.TestCase):
             ["episode must be a JSON object; aggregate arrays are not episode files"],
         )
 
+    def test_validate_episodes_requires_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                validate.validate_episodes(directory)
+
+    def test_report_rejects_contradictory_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            episodes_dir = root / "episodes"
+            episodes_dir.mkdir()
+            episode = {
+                "task_id": "t", "repo_commit": "abc", "configuration": "c",
+                "validator_outputs": [{"criterion": "AC1", "result": "FAIL"}],
+                "claimed_success": True, "functional_solve": True,
+                "false_completion": False,
+            }
+            (episodes_dir / "episode.json").write_text(
+                json.dumps(episode), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "benchmarks/cli.py"), "report",
+                 "--episodes", str(episodes_dir), "--out", str(root / "report")],
+                cwd=ROOT, capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Episode validation failed", result.stderr)
+
+    def test_report_rejects_empty_episodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            episodes_dir = root / "episodes"
+            episodes_dir.mkdir()
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "benchmarks/cli.py"), "report",
+                 "--episodes", str(episodes_dir), "--out", str(root / "report")],
+                cwd=ROOT, capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Episode validation failed", result.stderr)
+
+    def test_compare_skips_aggregate_artifacts(self):
+        episodes = [
+            [{"task_id": "A", "configuration": "base"}],
+            {"task_id": "A", "configuration": "base", "functional_solve": False},
+            {"task_id": "A", "configuration": "treated", "functional_solve": True},
+        ]
+        result = compare.compare(episodes, "base", "treated")
+        self.assertEqual(result["paired_episodes"], 1)
+
     def test_validator_allows_empty_directory_only_when_requested(self):
         with tempfile.TemporaryDirectory() as directory:
             command = [sys.executable, str(ROOT / "benchmarks/runner/validate.py"), "--episodes", directory]

@@ -159,6 +159,43 @@ class GuardTests(unittest.TestCase):
             # read-before-write: existing file never read -> deny is correct
             self.assertEqual(verdict["decision"], "deny")
 
+    def test_recorded_read_satisfies_read_before_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "a.py"
+            target.write_text("x = 1\n")
+            reads_dir = Path(tmp) / ".gravitas"
+            reads_dir.mkdir()
+            (reads_dir / "opencode-reads.jsonl").write_text(
+                json.dumps({"session": "", "file": "a.py", "source": "read"}) + "\n")
+            verdict = self.guard("edit", {"filePath": "a.py"},
+                                 {"mode": "implement", "allowed_write_scope": ["."]},
+                                 cwd=tmp)
+            self.assertEqual(verdict["decision"], "allow")
+
+    def test_reads_are_session_isolated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "a.py"
+            target.write_text("x = 1\n")
+            reads_dir = Path(tmp) / ".gravitas"
+            reads_dir.mkdir()
+            (reads_dir / "opencode-reads.jsonl").write_text(
+                json.dumps({"session": "other-session", "file": "a.py"}) + "\n"
+                + "not-json\n")
+            work = Path(tmp)
+            contract_path = work / "contract.json"
+            contract_path.write_text(json.dumps(
+                {"mode": "implement", "allowed_write_scope": ["."]}))
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "gravitas_cli.py"), "guard",
+                 "--contract", str(contract_path),
+                 "--envelope", json.dumps({"tool": "edit", "args": {"filePath": "a.py"},
+                                            "workspace_roots": [str(work)],
+                                            "conversation_id": "my-session",
+                                            "host": "opencode"})],
+                text=True, capture_output=True, cwd=work, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["decision"], "deny")
+
     def test_opencode_bash_maps_to_shell_policy(self):
         verdict = self.guard("bash", {"command": "rm -rf build/"},
                              {"mode": "implement", "allowed_write_scope": ["."]})

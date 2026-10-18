@@ -24,18 +24,22 @@ def episode_errors(episode, schema, schema_validator=None):
 
 
 def validate_episodes(episodes_dir, schema=None, schema_validator=None):
-    """Load and check every episode file. Returns (valid_episodes, invalid_count).
+    """Load and check every episode file.
 
-    Aggregate arrays are skipped (not episodes); schema-invalid files raise
-    ValueError naming the file. Infrastructure-failure episodes are valid
-    episodes counted as invalid runs downstream, never silently dropped.
+    Returns (valid_episodes, invalid_count).
+    Aggregate arrays are skipped (not episodes). Schema-invalid files raise
+    ValueError naming the file. Infrastructure-failure episodes remain
+    included for downstream metrics. ``schema`` is required: calling without
+    a schema would silently accept contradictory derived-truth fields.
     """
+    if schema is None:
+        raise ValueError("episode schema is required for validation")
     episodes, invalid = [], 0
     for path in sorted(Path(episodes_dir).glob("*.json")):
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(payload, list):
             continue
-        errors = episode_errors(payload, schema, schema_validator) if schema else []
+        errors = episode_errors(payload, schema, schema_validator)
         if errors:
             raise ValueError(f"{path}: {'; '.join(errors)}")
         episodes.append(payload)

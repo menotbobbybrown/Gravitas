@@ -73,8 +73,24 @@ def cmd_report(args):
     from metrics import aggregate
     from report import write_report
     from validate import validate_episodes
+    try:
+        from jsonschema import Draft7Validator
+    except ImportError:
+        print("jsonschema is required: pip install -r benchmarks/runner/requirements.txt",
+              file=sys.stderr)
+        return 2
     episodes_dir = Path(args.episodes)
-    episodes, invalid = validate_episodes(episodes_dir)
+    schema_path = Path(__file__).resolve().parent.parent / "schemas" / "episode.schema.json"
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        episodes, invalid = validate_episodes(
+            episodes_dir, schema=schema, schema_validator=Draft7Validator)
+    except (ValueError, OSError) as error:
+        print(f"Episode validation failed: {error}", file=sys.stderr)
+        return 1
+    if not episodes:
+        print(f"Episode validation failed: no valid episodes in {episodes_dir}", file=sys.stderr)
+        return 1
     summary = aggregate(episodes)
     comparisons = []
     if args.baseline and args.treatment:
