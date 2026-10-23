@@ -9,33 +9,59 @@ def episode_errors(episode, schema, schema_validator=None):
     if not isinstance(episode, dict):
         return ["episode must be a JSON object; aggregate arrays are not episode files"]
     errors = [error.message for error in schema_validator(schema).iter_errors(episode)] if schema_validator else []
-    results = [item["result"] for item in episode.get("validator_outputs", [])]
-    solved = bool(results) and all(result == "PASS" for result in results)
+    required_fields = {
+        "task_id", "configuration", "validator_outputs", "functional_solve",
+        "claimed_success", "false_completion", "infrastructure_failure",
+    }
+    missing = sorted(required_fields - episode.keys())
+    if missing:
+        errors.append("missing required fields: " + ", ".join(missing))
+
+    outputs = episode.get("validator_outputs")
+    if not isinstance(outputs, list):
+        errors.append("validator_outputs must be a list")
+        outputs = []
+    results = []
+    for index, output in enumerate(outputs):
+        result = output.get("result") if isinstance(output, dict) else None
+        if not isinstance(result, str) or result not in {"PASS", "FAIL", "INVALID"}:
+            errors.append(f"validator_outputs[{index}].result must be PASS, FAIL, or INVALID")
+        else:
+            results.append(result)
+    solved = bool(outputs) and len(results) == len(outputs) and all(result == "PASS" for result in results)
     expected = {
         "functional_solve": solved,
         "false_completion": bool(episode.get("claimed_success")) and not solved,
+        "infrastructure_failure": "INVALID" in results,
     }
     for field, value in expected.items():
         if field in episode and episode[field] != value:
             errors.append(f"{field} must be {value!r} from validator outputs")
-    if episode.get("infrastructure_failure") and any(result == "FAIL" for result in results):
-        errors.append("infrastructure failures must use INVALID validator results")
     return errors
+
+
+def read_episode(path):
+    """Load one JSON episode and attach its path to parse/read errors."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{path}: unable to read episode JSON: {error}") from error
 
 
 def validate_episodes(episodes_dir, schema=None, schema_validator=None):
     """Load and check every episode file. Returns (valid_episodes, invalid_count).
 
-    Aggregate arrays are skipped (not episodes); schema-invalid files raise
-    ValueError naming the file. Infrastructure-failure episodes are valid
-    episodes counted as invalid runs downstream, never silently dropped.
+    Every JSON file in this directory must be an episode object. Malformed,
+    array-shaped, or schema-invalid files raise ValueError rather than being
+    silently omitted. Infrastructure-failure episodes remain in the results
+    and are counted as invalid runs downstream.
     """
     episodes, invalid = [], 0
     for path in sorted(Path(episodes_dir).glob("*.json")):
-        payload = json.loads(path.read_text())
+        payload = read_episode(path)
         if isinstance(payload, list):
-            continue
-        errors = episode_errors(payload, schema, schema_validator) if schema else []
+            raise ValueError(f"{path}: episode must be a JSON object; aggregate arrays are not episode files")
+        errors = episode_errors(payload, schema, schema_validator)
         if errors:
             raise ValueError(f"{path}: {'; '.join(errors)}")
         episodes.append(payload)
@@ -48,7 +74,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", required=True)
     parser.add_argument("--allow-empty", action="store_true", help="succeed when the directory has no episode files")
-    parser.add_argument("--schema", default=str(Path(__file__).parents[2] / "schemas/episode.schema.json"))
+    parser.add_argument("--schema", default=str(Path(__file__).with_name("episode.schema.json")))
     args = parser.parse_args()
     try:
         from jsonschema import Draft7Validator
@@ -60,7 +86,12 @@ def main():
     failures = 0
     skipped = 0
     for path in paths:
-        payload = json.loads(path.read_text())
+        try:
+            payload = read_episode(path)
+        except ValueError as error:
+            failures += 1
+            print(f"FAIL {error}")
+            continue
         if isinstance(payload, list):
             skipped += 1
             print(f"SKIP {path}: aggregate artifact, not an episode")

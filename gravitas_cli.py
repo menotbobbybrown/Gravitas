@@ -239,6 +239,8 @@ def cmd_repro(args: argparse.Namespace) -> int:
     command = [sys.executable, str(SCRIPTS / "repro_runner.py"),
                "--session-dir", args.session_dir, "--criterion-id", args.criterion_id,
                "--phase", args.phase, "--cwd", args.cwd]
+    if args.reproducer_id:
+        command.extend(["--reproducer-id", args.reproducer_id])
     if args.unreproducible:
         command.extend(["--unreproducible", "--reason", args.reason])
         return subprocess.run(command, check=False).returncode
@@ -726,6 +728,7 @@ def main() -> int:
     repro = sub.add_parser("repro", help="Run a bug reproducer bound to a criterion (reproduction-first protocol)")
     repro.add_argument("--session-dir", required=True)
     repro.add_argument("--criterion-id", required=True)
+    repro.add_argument("--reproducer-id", help="Declared reproducer ID from the task contract")
     repro.add_argument("--phase", default="before", choices=["before", "after"])
     repro.add_argument("--unreproducible", action="store_true")
     repro.add_argument("--reason", default="")

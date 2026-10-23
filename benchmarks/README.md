@@ -134,6 +134,11 @@ validators are still required before any implementation episode can be used in
 a model comparison. Development smoke artifacts are ignored by git and must
 never be presented as model-comparison results.
 
+The report command validates each episode against
+`benchmarks/runner/episode.schema.json` and checks derived outcome fields against
+the validator results before aggregation. Contradictory or malformed episodes
+fail the report instead of contributing to published metrics.
+
 Hidden acceptance tests are materialized only after the agent trajectory ends.
 Episode worktrees use owner-only (`0700`) permissions on POSIX systems; if the
 system temporary directory cannot provide that mode, the runner falls back to
