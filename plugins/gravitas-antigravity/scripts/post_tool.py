@@ -18,13 +18,15 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from session_context import session_dir_for_payload
-from evidence_chain import append_evidence
+from evidence_chain import append_evidence, file_sha256, resolution_links
 from gravitas_action import (
     READ_TOOLS,
     WRITE_TOOLS,
     antigravity_envelope,
+    canonical_path,
     classify_shell,
     target_file,
+    workspace_roots,
 )
 
 
@@ -45,6 +47,21 @@ def append_jsonl(path: Path, entry: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+def record_evidence(session_dir: Path, entry: dict) -> None:
+    """Append hook evidence without ever crashing the host hook contract.
+
+    Ledger durability failures are unrecoverable here, but the hook must
+    still answer `{}`; anchor-store failures are already downgraded to an
+    ``anchor_pending`` flag inside ``append_evidence`` (fail-closed at the
+    stop gate), so swallowing the residual ledger error only skips a
+    record the gate would have required anyway.
+    """
+    try:
+        append_evidence(session_dir, entry)
+    except (OSError, ValueError):
+        pass
 
 
 SECRET_PATTERNS = (
@@ -109,14 +126,20 @@ def main():
     session_dir = session_dir_for_payload(payload, create=True)
     fingerprint = action_fingerprint(tool_name, tool_input)
 
-    # Record file reads for read-before-write enforcement
+    # Record file reads for read-before-write enforcement. The stored path is
+    # canonical (absolute, realpath-resolved) so later compares are stable.
     if tool_name in READ_TOOLS:
         target = target_file(tool_name, tool_input)
         if target:
-            append_evidence(session_dir, {
+            roots = workspace_roots(antigravity_envelope(payload)[0])
+            canonical_target = canonical_path(target, roots)
+            content_hash = file_sha256(canonical_target) if success else None
+            record_evidence(session_dir, {
                 "source": "read",
-                "file": target,
+                "file": str(canonical_target),
                 "timestamp": timestamp,
+                "resolution_ids": resolution_links(session_dir, source="read", file=target),
+                **({"file_sha256": content_hash} if content_hash else {}),
                 **({"sensitive": True} if is_sensitive_path(target) else {}),
             })
 
@@ -144,7 +167,7 @@ def main():
         }.items() if any(term in command for term in terms)), None)
         if source:
             output_snippet = redact_text(tool_output)
-            append_evidence(session_dir, {
+            record_evidence(session_dir, {
                 "source": source,
                 "command": command,
                 "success": success,
@@ -158,8 +181,9 @@ def main():
         if command:
             classification = classify_shell(command)
             if classification.get("mutation") in ("mutation", "destructive", "write"):
-                for path in classification.get("paths", []):
-                    append_evidence(session_dir, {
+                paths = classification.get("paths", [])
+                for path in paths or [None]:
+                    record_evidence(session_dir, {
                         "source": "write",
                         "file": path,
                         "command": command,
@@ -170,7 +194,7 @@ def main():
     # Record file writes
     if tool_name in WRITE_TOOLS:
         target = tool_input.get("TargetFile", tool_input.get("target_file", ""))
-        append_evidence(session_dir, {
+        record_evidence(session_dir, {
             "source": "write",
             "file": target,
             "success": success,

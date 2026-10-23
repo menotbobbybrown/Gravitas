@@ -21,9 +21,13 @@ denylist regex: unparsable input fails closed to ``mutation`` at minimum.
 """
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import sys
+import unicodedata
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 #: Ordered capability levels.
@@ -834,6 +838,65 @@ def workspace_roots(envelope: HostEnvelope | None) -> list[Path]:
     if envelope and envelope.workspace_roots:
         return [Path(value).resolve(strict=False) for value in envelope.workspace_roots]
     return [Path.cwd().resolve()]
+
+
+# ---------------------------------------------------------------------------
+# Path identity: canonicalize at record, fold at compare.
+# ---------------------------------------------------------------------------
+
+#: APFS/HFS+ treat NFC and NFD names as the same file; ext4 and NTFS do not.
+UNICODE_INSENSITIVE_FS = sys.platform == "darwin"
+
+
+def canonical_path(raw: str, roots: list[Path] | None = None, *,
+                   windows: bool | None = None) -> Path:
+    """Record-time path identity: absolute and realpath-resolved.
+
+    Relative paths join the first workspace root (cwd when none). ``.``,
+    ``..`` and symlinks resolve against the filesystem, so an escape stays
+    visible to scope checks. Case and Unicode form are preserved:
+    :func:`path_key` folds them for comparison only, because a folded
+    path can name a different file on a sensitive volume. ``\\`` is a
+    separator only under Windows semantics; on POSIX it is a filename
+    character.
+    """
+    text = str(raw)
+    if os.name == "nt" if windows is None else windows:
+        text = text.replace("\\", "/")
+    path = Path(text)
+    if not path.is_absolute():
+        path = (roots[0] if roots else Path.cwd()) / path
+    return path.resolve(strict=False)
+
+
+@lru_cache(maxsize=None)
+def case_insensitive_fs(path: Path) -> bool:
+    """Probe whether the volume holding ``path`` folds case.
+
+    Uses the nearest existing ancestor whose name has letters; falls back
+    to the platform default (macOS/Windows fold) when nothing is probeable.
+    """
+    for probe in (path, *path.parents):
+        swapped = probe.name.swapcase()
+        if swapped == probe.name:
+            continue
+        try:
+            if probe.exists():
+                return os.path.samefile(probe, probe.with_name(swapped))
+        except OSError:
+            return False
+    return sys.platform in ("darwin", "win32")
+
+
+def path_key(path: Path, *, case_insensitive: bool,
+             unicode_insensitive: bool = UNICODE_INSENSITIVE_FS) -> str:
+    """Compare-time identity of a :func:`canonical_path` result."""
+    text = str(path)
+    if unicode_insensitive:
+        text = unicodedata.normalize("NFC", text)
+    if case_insensitive:
+        text = text.lower()
+    return text
 
 
 def confine_cwd(raw: str) -> Path:

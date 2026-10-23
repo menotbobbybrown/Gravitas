@@ -134,6 +134,23 @@ validators are still required before any implementation episode can be used in
 a model comparison. Development smoke artifacts are ignored by git and must
 never be presented as model-comparison results.
 
+The report command validates each episode against
+`benchmarks/runner/episode.schema.json` and checks derived outcome fields against
+the validator results before aggregation. Contradictory or malformed episodes
+fail the report instead of contributing to published metrics.
+
+Hidden acceptance tests are materialized only after the agent trajectory ends.
+Episode worktrees use owner-only (`0700`) permissions on POSIX systems; if the
+system temporary directory cannot provide that mode, the runner falls back to
+`.gravitas/benchmark-worktrees` and fails rather than running in a public
+directory. On Windows, directory ACLs are inherited from the configured
+temporary directory because Python does not expose equivalent portable ACL
+verification here.
+
+Raw local episode JSON retains bounded validator output for diagnosis. Reports
+export a separate `episodes.jsonl` copy with each validator `output` removed
+and replaced by its SHA-256 digest; source episode files are not modified.
+
 When comparative results are published, this section will include:
 - N tasks, runs per config
 - Antigravity version and Gravitas version

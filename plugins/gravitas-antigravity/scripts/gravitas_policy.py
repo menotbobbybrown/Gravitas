@@ -20,9 +20,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
-from gravitas_action import LEVELS, Action, HostEnvelope, normalize, workspace_roots
+from gravitas_action import (
+    LEVELS,
+    Action,
+    HostEnvelope,
+    canonical_path,
+    case_insensitive_fs,
+    normalize,
+    path_key,
+    workspace_roots,
+)
 
 MODES = frozenset({
     "answer", "research", "plan", "review", "security-review",
@@ -53,23 +63,45 @@ def action_fingerprint(tool: str, args: dict) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
-def target_in_scope(target: str, scopes: list, roots: list[Path]) -> bool:
-    target_path = Path(target).resolve(strict=False)
-    if not Path(target).is_absolute():
-        candidates = [(root / target).resolve(strict=False) for root in roots]
-    else:
-        candidates = [target_path]
+def target_in_scope(target: str, scopes: list, roots: list[Path], *,
+                    case_insensitive: bool | None = None) -> bool:
+    """Both sides go through canonical_path + path_key: ``..`` and symlink
+    escapes resolve before comparison, and case folds only when the scope's
+    own volume folds (roots and absolute scopes may sit on different ones)."""
+    candidates = {canonical_path(target, [root]) for root in roots}
+    lexical_candidates = set()
+    if case_insensitive is False:
+        for root in roots:
+            text = target.replace("\\", "/") if os.name == "nt" else target
+            path = Path(text)
+            if not path.is_absolute():
+                path = root / path
+            lexical_candidates.add(path.absolute())
+
     for scope in scopes:
         if not isinstance(scope, str) or not scope:
             continue
         for root in roots:
-            scope_path = (root / scope).resolve(strict=False) if not Path(scope).is_absolute() else Path(scope).resolve(strict=False)
-            for candidate in candidates:
-                try:
-                    candidate.relative_to(scope_path)
-                    return True
-                except ValueError:
+            scope_path = canonical_path(scope, [root])
+            fold = case_insensitive_fs(scope_path) if case_insensitive is None else case_insensitive
+            scope_parts = Path(path_key(scope_path, case_insensitive=fold)).parts
+            if lexical_candidates:
+                scope_text = scope.replace("\\", "/") if os.name == "nt" else scope
+                lexical_scope = Path(scope_text)
+                if not lexical_scope.is_absolute():
+                    lexical_scope = root / lexical_scope
+                lexical_scope_parts = lexical_scope.absolute().parts
+                if not any(
+                    len(candidate.parts) >= len(lexical_scope_parts)
+                    and candidate.parts[:len(lexical_scope_parts)] == lexical_scope_parts
+                    for candidate in lexical_candidates
+                ):
                     continue
+            for candidate in candidates:
+                candidate_parts = Path(path_key(candidate, case_insensitive=fold)).parts
+                if (len(candidate_parts) >= len(scope_parts)
+                        and candidate_parts[:len(scope_parts)] == scope_parts):
+                    return True
     return False
 
 
@@ -117,9 +149,12 @@ def evaluate_action(action: Action, *, mode: str, allowed_scope: list,
 
     # 4. Read-before-write check.
     if action.kind == "write" and action.paths:
-        target_path = Path(action.paths[0]).resolve(strict=False)
-        read_paths = {Path(item).resolve(strict=False) for item in reads}
-        if target_path.exists() and target_path not in read_paths:
+        # Ledger rows may predate record-time canonicalization, so both
+        # sides are canonicalized here; exists() uses the unfolded path.
+        target_path = canonical_path(action.paths[0], roots)
+        fold = case_insensitive_fs(target_path)
+        read_keys = {path_key(canonical_path(item, roots), case_insensitive=fold) for item in reads}
+        if target_path.exists() and path_key(target_path, case_insensitive=fold) not in read_keys:
             return ("deny",
                     f"Read-before-write violation: {action.paths[0]} has not been read this session. "
                     f"Read the file before editing it (Rule 1).")

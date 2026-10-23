@@ -7,21 +7,30 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft7Validator, ValidationError
 
 
 ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / "plugins/gravitas-antigravity/scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
 
 def run_script(name, payload=None, *args, cwd):
+    env = os.environ.copy()
+    isolated_home = str(Path(cwd) / ".test-user-home")
+    env["HOME"] = isolated_home
+    if os.name == "nt":
+        env["USERPROFILE"] = isolated_home
     return subprocess.run(
         [sys.executable, str(SCRIPTS / name), *args],
         input=json.dumps(payload) if payload is not None else None,
         text=True,
         capture_output=True,
         cwd=cwd,
+        env=env,
         check=False,
     )
 
@@ -125,7 +134,10 @@ class RuntimeTests(unittest.TestCase):
         session = self.init({"mode": "implement", "objective": "x"})
         target = self.cwd / "existing.py"
         target.write_text("x = 1\n")
-        (session / "evidence.jsonl").write_text(json.dumps({"source": "read", "file": str(target)}) + "\n")
+        (session / "evidence.jsonl").write_text(json.dumps({
+            "source": "read", "file": str(target),
+            "file_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        }) + "\n")
         existing = run_script("pre_tool.py", {"tool_name": "write_to_file", "tool_input": {"TargetFile": "existing.py"}}, cwd=self.cwd)
         new = run_script("pre_tool.py", {"tool_name": "write_to_file", "tool_input": {"TargetFile": "new.py"}}, cwd=self.cwd)
         self.assertEqual(json.loads(existing.stdout)["decision"], "allow")
@@ -160,7 +172,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), {})
         entries = [json.loads(line) for line in (session / "evidence.jsonl").read_text().splitlines()]
         self.assertEqual(entries[-1]["source"], "read")
-        self.assertEqual(entries[-1]["file"], str(target))
+        self.assertEqual(entries[-1]["file"], str(target.resolve()))
         schema = json.loads((ROOT / "schemas/evidence.schema.json").read_text())
         Draft7Validator(schema).validate(entries[-1])
 
@@ -220,7 +232,7 @@ class RuntimeTests(unittest.TestCase):
             }
             res = run_script("post_tool.py", payload, cwd=self.cwd)
             self.assertEqual(json.loads(res.stdout), {})
-        for cmd in ("ls", "git status"):
+        for cmd in ("ls", "git status", "echo hi"):
             payload = {
                 "toolCall": {"name": "run_command", "args": {"CommandLine": cmd}},
                 "success": True,
@@ -262,6 +274,33 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(gate_after["decision"], "continue")
         self.assertIn("acceptance criteria have no verification evidence", gate_after["reason"])
 
+    def test_unknown_shell_write_invalidates_prior_validator_pass(self):
+        session = self.init({
+            "mode": "implement", "objective": "x",
+            "acceptance_criteria": [{"id": "tests", "statement": "tests pass", "validators": ["unit"]}],
+            "validators": [{"id": "unit", "command": [sys.executable, "-c", "pass"], "criterion_ids": ["tests"]}],
+        })
+        result = run_script(
+            "validator_runner.py", None, "--session-dir", str(session), "--validator-id", "unit",
+            "--criterion-id", "tests", "--", sys.executable, "-c", "pass", cwd=self.cwd,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        command = "python -c \"open('a.py', 'w').write('x')\""
+        result = run_script(
+            "post_tool.py",
+            {"toolCall": {"name": "run_command", "args": {"CommandLine": command}},
+             "success": True},
+            cwd=self.cwd,
+        )
+        self.assertEqual(json.loads(result.stdout), {})
+        entries = [json.loads(line) for line in (session / "evidence.jsonl").read_text().splitlines()]
+        unknown_write = next(entry for entry in entries if entry.get("source") == "write")
+        self.assertIsNone(unknown_write["file"])
+        schema = json.loads((ROOT / "schemas/evidence.schema.json").read_text())
+        Draft7Validator(schema).validate(unknown_write)
+        gate = json.loads(run_script("stop_gate.py", {}, cwd=self.cwd).stdout)
+        self.assertNotEqual(gate["decision"], "allow")
+
     def test_stop_gate_rejects_forged_validator_command(self):
         declared_command = [sys.executable, "-c", "pass"]
         session = self.init({
@@ -279,10 +318,12 @@ class RuntimeTests(unittest.TestCase):
             "timestamp": "2999-01-01T00:00:00+00:00",
             "previous_event_hash": None,
         }
-        forged["event_hash"] = hashlib.sha256(
-            json.dumps(forged, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        ).hexdigest()
-        (session / "evidence.jsonl").write_text(json.dumps(forged) + "\n")
+        from evidence_chain import append_evidence
+        with patch.dict(
+            os.environ, {"HOME": str(self.cwd / ".test-user-home"),
+                         "USERPROFILE": str(self.cwd / ".test-user-home")}
+        ):
+            append_evidence(session, forged)
 
         gate = json.loads(run_script("stop_gate.py", {}, cwd=self.cwd).stdout)
         self.assertEqual(gate["decision"], "continue")
@@ -297,7 +338,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         ledger = session / "evidence.jsonl"
         ledger.write_text(ledger.read_text().replace('"exit_code":0', '"exit_code":1'))
-        cli = subprocess.run([sys.executable, str(ROOT / "gravitas_cli.py"), "verify", "--session-dir", str(session)], text=True, capture_output=True, cwd=self.cwd, check=False)
+        env = os.environ.copy()
+        isolated_home = str(self.cwd / ".test-user-home")
+        env["HOME"] = isolated_home
+        if os.name == "nt":
+            env["USERPROFILE"] = isolated_home
+        cli = subprocess.run([sys.executable, str(ROOT / "gravitas_cli.py"), "verify", "--session-dir", str(session)], text=True, capture_output=True, cwd=self.cwd, env=env, check=False)
         self.assertNotEqual(cli.returncode, 0)
 
     def test_validator_runner_rejects_undeclared_criterion_or_command(self):
@@ -330,7 +376,10 @@ class RuntimeTests(unittest.TestCase):
         second = self.init({"mode": "implement", "objective": "second"}, task_id="second", conversation_id="conversation-b")
         target = self.cwd / "existing.py"
         target.write_text("VALUE = 1\n")
-        (first / "evidence.jsonl").write_text(json.dumps({"source": "read", "file": str(target)}) + "\n")
+        (first / "evidence.jsonl").write_text(json.dumps({
+            "source": "read", "file": str(target),
+            "file_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        }) + "\n")
         first_payload = {"conversationId": "conversation-a", "toolCall": {"name": "write_to_file", "args": {"TargetFile": "existing.py"}}}
         second_payload = {"conversationId": "conversation-b", "toolCall": {"name": "write_to_file", "args": {"TargetFile": "existing.py"}}}
         self.assertEqual(json.loads(run_script("pre_tool.py", first_payload, cwd=self.cwd).stdout)["decision"], "allow")

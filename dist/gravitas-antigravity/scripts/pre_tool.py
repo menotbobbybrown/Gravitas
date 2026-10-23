@@ -17,7 +17,8 @@ import json
 import sys
 from pathlib import Path
 
-from gravitas_action import antigravity_envelope, workspace_roots
+from gravitas_action import antigravity_envelope, canonical_path, workspace_roots
+from evidence_chain import file_sha256, resolution_matches, verified_resolution_records
 from gravitas_policy import (
     MODE_ALIASES,
     MODES,
@@ -54,23 +55,47 @@ def load_failures(session_dir: Path) -> list:
     return failures
 
 
+def active_failures(failures: list, resolutions: dict) -> list:
+    """Apply resolution markers in order so a later failure re-arms its ban."""
+    latest_by_fingerprint = {}
+    unkeyed = []
+    for entry in failures:
+        if not isinstance(entry, dict):
+            continue
+        fingerprint = entry.get("fingerprint")
+        if not fingerprint:
+            if not resolution_matches(entry, resolutions.get(entry.get("resolution_id"))):
+                unkeyed.append(entry)
+            continue
+        latest_by_fingerprint[fingerprint] = entry
+    return unkeyed + [
+        entry for entry in latest_by_fingerprint.values()
+        if not resolution_matches(entry, resolutions.get(entry.get("resolution_id")))
+    ]
+
+
 def load_reads(session_dir: Path) -> set:
-    """Load set of files read this session from evidence ledger."""
-    reads = set()
+    """Load reads whose current content still matches the recorded snapshot."""
+    recorded_reads = {}
     evidence_path = session_dir / "evidence.jsonl"
     if not evidence_path.exists():
-        return reads
+        return set()
     with open(evidence_path) as f:
         for line in f:
             line = line.strip()
             if line:
                 try:
                     entry = json.loads(line)
-                    if entry.get("source") == "read" and entry.get("file"):
-                        reads.add(entry["file"])
+                    if entry.get("source") == "read" and isinstance(entry.get("file"), str):
+                        recorded_hash = entry.get("file_sha256")
+                        if isinstance(recorded_hash, str):
+                            recorded_reads[entry["file"]] = recorded_hash
                 except json.JSONDecodeError:
                     pass
-    return reads
+    return {
+        path for path, recorded_hash in recorded_reads.items()
+        if file_sha256(Path(path)) == recorded_hash
+    }
 
 
 def deny(reason: str):
@@ -107,7 +132,7 @@ def main():
 
     if action.kind == "write" and not session_dir:
         target = action.paths[0] if action.paths else ""
-        if target and Path(target).resolve(strict=False).exists():
+        if target and canonical_path(target, workspace_roots(envelope)).exists():
             deny("Read-before-write violation: no Gravitas session has recorded a read of this existing file.")
             return
 
@@ -115,13 +140,15 @@ def main():
     reads = load_reads(session_dir) if session_dir else set()
     fingerprint = action_fingerprint(envelope.tool, envelope.args)
 
-    # A failure bans its exact fingerprint until something material changes.
-    # Entries marked resolved:true (via `gravitas resolve-failure` after the
-    # transient cause is gone) re-arm the action; everything else still bans.
-    resolved = {entry.get("fingerprint") for entry in failures
-                if entry.get("resolved") is True and entry.get("fingerprint")}
-    failed = {entry.get("fingerprint") for entry in failures
-              if entry.get("fingerprint") and entry.get("fingerprint") not in resolved}
+    # A resolution re-arms exactly the latest failure for that fingerprint.
+    resolutions = {}
+    if session_dir and any(
+        isinstance(entry, dict) and entry.get("resolved") is True
+        for entry in failures
+    ):
+        resolutions = verified_resolution_records(session_dir)
+    failed = {entry.get("fingerprint") for entry in active_failures(failures, resolutions)
+              if entry.get("fingerprint")}
 
     decision, reason = evaluate_action(
         action,

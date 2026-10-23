@@ -12,7 +12,9 @@ final mutation cannot satisfy the finish gate.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 STATES = ("PENDING", "SUPPORTED", "PASS", "FAIL", "BLOCKED", "UNVERIFIABLE")
 
@@ -62,6 +64,47 @@ def last_write_time(evidence: list[dict]) -> datetime | None:
             if latest is None or moment > latest:
                 latest = moment
     return latest
+
+
+def opencode_completion_writes(path, session_id: str) -> list[dict]:
+    """Convert successful, session-matched OpenCode mutations into dirty evidence."""
+    if not session_id:
+        return []
+    path = Path(path)
+    if not path.exists():
+        return []
+    writes = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if (not isinstance(entry, dict)
+                or entry.get("session_id") != session_id
+                or entry.get("success") is not True):
+            continue
+        tool = entry.get("tool")
+        mutating = tool in ("edit", "write", "patch")
+        if tool == "bash":
+            args = entry.get("args")
+            command = args.get("command") if isinstance(args, dict) else None
+            if isinstance(command, str) and command:
+                from gravitas_action import classify_shell
+                mutating = classify_shell(command).get("mutation") in (
+                    "mutation", "destructive", "write"
+                )
+            else:
+                mutating = True
+        if not mutating:
+            continue
+        writes.append({
+            "source": "write",
+            "file": None,
+            "timestamp": entry.get("timestamp"),
+            "opencode_session_id": session_id,
+            "completion_tool": tool,
+        })
+    return writes
 
 
 def is_fresh(entry: dict, evidence: list[dict]) -> bool:

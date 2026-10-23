@@ -19,15 +19,23 @@
  * with missing arguments are denied locally without consulting the guard.
  * The shim never shells to itself (it invokes `gravitas guard` only).
  *
+ * Path identity: file paths are forwarded verbatim and canonicalized by
+ * the guard (realpath + volume-aware case/Unicode folding, see
+ * canonical_path/path_key in gravitas_action.py). Do not normalize here:
+ * a lexical `..` collapse ignores symlinks, and NFC/lowercase folding
+ * names a different file on Linux, so either would let an out-of-scope
+ * write look in-scope.
+ *
  * Requires `gravitas` (pip install gravitas) and python3 on PATH.
  */
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const MUTATING_TOOLS = new Set(["bash", "edit", "write", "patch"]);
 const READ_EVIDENCE_TOOLS = new Set(["read"]);
+const COMPLETION_TOOLS = new Set(["bash", "edit", "write", "patch"]);
 
 function hasMutatingArgs(tool, args) {
   if (!MUTATING_TOOLS.has(tool)) return true;
@@ -40,7 +48,7 @@ export function toEnvelope(tool, args, directory, sessionID = "") {
   const envelope = {
     tool: String(tool || ""),
     args: args && typeof args === "object" ? args : {},
-    conversation_id: String(sessionID || ""),
+    conversation_id: typeof sessionID === "string" ? sessionID : "",
     workspace_roots: directory ? [directory] : [],
     host: "opencode",
     event: "before_action",
@@ -128,6 +136,60 @@ function readTargetFor(tool, normalizedEnvelope) {
   return normalizedEnvelope?.args?.AbsolutePath || "";
 }
 
+function completionArgs(tool, args) {
+  if (tool === "bash") {
+    const command = typeof args?.command === "string" ? args.command : "";
+    return {
+      command: command.replace(
+        /((?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*)(["']?)[^\s"'&;]+/gi,
+        "$1[REDACTED]"
+      ),
+    };
+  }
+  const filePath = args?.filePath || args?.path;
+  return typeof filePath === "string" ? { filePath } : {};
+}
+
+function recordCompletion(directory, input, output) {
+  const tool = input?.tool;
+  if (!COMPLETION_TOOLS.has(tool)) return;
+  const sessionID = input?.sessionID || input?.sessionId;
+  if (typeof sessionID !== "string" || !sessionID) {
+    console.error(`[gravitas] cannot record ${tool} completion without a session id`);
+    return;
+  }
+  if (typeof directory !== "string" || !directory) {
+    console.error(`[gravitas] cannot record ${tool} completion without a workspace directory`);
+    return;
+  }
+  const args = input?.args ?? output?.args ?? {};
+  const result = output && typeof output === "object" ? output : {};
+  const event = {
+    session_id: sessionID,
+    tool,
+    args: completionArgs(tool, args),
+    success: result.success !== false && !result.error,
+    timestamp: new Date().toISOString(),
+  };
+  const path = join(directory, ".gravitas", "opencode-completions.jsonl");
+  try {
+    const parent = dirname(path);
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") chmodSync(parent, 0o700);
+    try {
+      if (lstatSync(path).isSymbolicLink()) {
+        throw new Error("completion ledger must not be a symbolic link");
+      }
+      chmodSync(path, 0o600);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch (error) {
+    console.error(`[gravitas] failed to record ${tool} completion: ${error.message}`);
+  }
+}
+
 export const GravitasPlugin = async ({ directory }) => {
   return {
     "tool.execute.before": async (input, output) => {
@@ -146,6 +208,11 @@ export const GravitasPlugin = async ({ directory }) => {
       if (verdict && verdict.decision === "deny") {
         throw new Error(`Gravitas denied ${tool}: ${verdict.reason || "policy decision"}`);
       }
+      if (verdict?.stale_validator_criteria?.length) {
+        console.warn(
+          `[gravitas] prior validator evidence is stale for: ${verdict.stale_validator_criteria.join(", ")}`
+        );
+      }
       if (READ_EVIDENCE_TOOLS.has(tool)) {
         const target = readTargetFor(tool, toEnvelope(tool, args, directory, sessionID));
         recordOpencodeRead(directory, sessionID, target);
@@ -155,9 +222,11 @@ export const GravitasPlugin = async ({ directory }) => {
       const tool = input?.tool;
       const sessionID = input?.sessionID || input?.sessionId || "";
       const args = output?.args ?? {};
-      if (typeof tool !== "string" || !READ_EVIDENCE_TOOLS.has(tool)) return;
-      const target = readTargetFor(tool, toEnvelope(tool, args, directory, sessionID));
-      recordOpencodeRead(directory, sessionID, target);
+      if (typeof tool === "string" && READ_EVIDENCE_TOOLS.has(tool)) {
+        const target = readTargetFor(tool, toEnvelope(tool, args, directory, sessionID));
+        recordOpencodeRead(directory, sessionID, target);
+      }
+      recordCompletion(directory, input, output);
     },
   };
 };
