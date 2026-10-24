@@ -424,8 +424,9 @@ def _load_opencode_reads(contract_path: Path, session_id: str) -> set:
 
     The OpenCode shim appends ``{session, file, source}`` rows to
     ``.gravitas/opencode-reads.jsonl`` (cwd first, contract dir fallback).
-    Rows from other sessions never satisfy this session's read check.
-    Corrupt lines are skipped; a missing file means no recorded reads.
+    Rows from other sessions never satisfy this session's read check
+    (exact session match; empty-session rows only match session-less
+    checks). Corrupt lines are skipped; a missing file means no reads.
     """
     candidates = [
         Path.cwd() / ".gravitas" / "opencode-reads.jsonl",
@@ -450,7 +451,7 @@ def _load_opencode_reads(contract_path: Path, session_id: str) -> set:
                     continue
                 if not isinstance(row, dict) or not row.get("file"):
                     continue
-                if session_id and row.get("session") not in ("", session_id):
+                if row.get("session") != session_id:
                     continue
                 reads.add(str(row["file"]))
         except OSError:

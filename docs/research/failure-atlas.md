@@ -12,9 +12,13 @@ host or bypassable), **open** (no mitigation).
   the check. Antigravity path (`pre_tool.py:57-73` + `post_tool.py:112-121`)
   was protected.
 - Fix: `adapters/opencode/plugin/gravitas.js` appends `{session, file}` rows to
-  `.gravitas/opencode-reads.jsonl` on `tool.execute.before` (allow) and `after`;
-  `cmd_guard` loads rows filtered by `conversation_id` (`_load_opencode_reads`).
-- Tests: `tests/test_opencode.py` read-then-allow, cross-session deny, corrupt-line skip.
+  `.gravitas/opencode-reads.jsonl` on `tool.execute.after` only when the read
+  succeeded and a session id is present; `cmd_guard` loads rows by exact
+  `conversation_id` match (`_load_opencode_reads`). Recording in `before`
+  would authorize writes for reads that then fail, and empty-session rows no
+  longer satisfy named sessions.
+- Tests: `tests/test_opencode.py` read-then-allow, cross-session deny, corrupt-line skip,
+  empty-session deny, same-session allow, after-hook success-only recording.
 - Residual: shell-redirect reads still invisible; see F5.
 
 ## F2 — Contradictory episodes entered reports — PROTECTED (this session)

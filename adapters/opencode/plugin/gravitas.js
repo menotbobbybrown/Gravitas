@@ -117,8 +117,13 @@ function decide(directory, tool, args, sessionID = "") {
   return verdict;
 }
 
-function recordOpencodeRead(directory, sessionID, file) {
+function recordOpencodeRead(directory, sessionID, file, succeeded) {
   if (!directory || !file) return;
+  if (!succeeded) return; // failed reads must never authorize later writes
+  if (typeof sessionID !== "string" || !sessionID) {
+    console.error("[gravitas] cannot record read without a session id (fail-closed: no read evidence stored)");
+    return;
+  }
   try {
     mkdirSync(join(directory, ".gravitas"), { recursive: true });
     appendFileSync(
@@ -134,6 +139,11 @@ function recordOpencodeRead(directory, sessionID, file) {
 function readTargetFor(tool, normalizedEnvelope) {
   if (tool !== "read") return "";
   return normalizedEnvelope?.args?.AbsolutePath || "";
+}
+
+function readSucceeded(output) {
+  if (!output || typeof output !== "object") return false;
+  return output.success !== false && !output.error;
 }
 
 function completionArgs(tool, args) {
@@ -213,10 +223,8 @@ export const GravitasPlugin = async ({ directory }) => {
           `[gravitas] prior validator evidence is stale for: ${verdict.stale_validator_criteria.join(", ")}`
         );
       }
-      if (READ_EVIDENCE_TOOLS.has(tool)) {
-        const target = readTargetFor(tool, toEnvelope(tool, args, directory, sessionID));
-        recordOpencodeRead(directory, sessionID, target);
-      }
+      // Read evidence is recorded only in tool.execute.after on success:
+      // recording in .before would authorize writes for reads that then fail.
     },
     "tool.execute.after": async (input, output) => {
       const tool = input?.tool;
@@ -224,7 +232,7 @@ export const GravitasPlugin = async ({ directory }) => {
       const args = output?.args ?? {};
       if (typeof tool === "string" && READ_EVIDENCE_TOOLS.has(tool)) {
         const target = readTargetFor(tool, toEnvelope(tool, args, directory, sessionID));
-        recordOpencodeRead(directory, sessionID, target);
+        recordOpencodeRead(directory, sessionID, target, readSucceeded(output));
       }
       recordCompletion(directory, input, output);
     },
