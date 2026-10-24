@@ -419,6 +419,46 @@ def _opencode_tool(tool: str, args: dict) -> tuple[str, dict]:
     return name, convert(args if isinstance(args, dict) else {})
 
 
+def _load_opencode_reads(contract_path: Path, session_id: str) -> set:
+    """Load recorded OpenCode reads for read-before-write enforcement.
+
+    The OpenCode shim appends ``{session, file, source}`` rows to
+    ``.gravitas/opencode-reads.jsonl`` (cwd first, contract dir fallback).
+    Rows from other sessions never satisfy this session's read check
+    (exact session match; empty-session rows only match session-less
+    checks). Corrupt lines are skipped; a missing file means no reads.
+    """
+    candidates = [
+        Path.cwd() / ".gravitas" / "opencode-reads.jsonl",
+        contract_path.parent / "opencode-reads.jsonl",
+    ]
+    reads: set = set()
+    seen: set = set()
+    for candidate in candidates:
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        try:
+            if not candidate.exists():
+                continue
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict) or not row.get("file"):
+                    continue
+                if row.get("session") != session_id:
+                    continue
+                reads.add(str(row["file"]))
+        except OSError:
+            continue
+    return reads
+
+
 def opencode_session_evidence(root: Path, session_id: str) -> list[dict]:
     """Load completion and validator evidence without crossing OpenCode sessions."""
     if not session_id:
@@ -522,9 +562,12 @@ def cmd_guard(args: argparse.Namespace) -> int:
         print(json.dumps({"decision": "deny", "policy_state": policy_state,
                           "reason": contract_warning or "contract unavailable; denied fail-closed"}))
         return 0
+    session_id = str(data.get("conversation_id", "") or data.get("sessionID", "")
+                     or data.get("session_id", ""))
+    reads = _load_opencode_reads(contract_path, session_id) if envelope.host == "opencode" else set()
     decision, reason = evaluate_action(
         action, mode=normalize_mode(contract.get("mode", "implement")),
-        allowed_scope=contract.get("allowed_write_scope", []), reads=set(),
+        allowed_scope=contract.get("allowed_write_scope", []), reads=reads,
         failed_fingerprints=set(), roots=workspace_roots(envelope),
         fingerprint=action_fingerprint(envelope.tool, envelope.args))
     out = {"decision": "deny" if decision == "force_ask" else decision,

@@ -6,6 +6,10 @@ import sys
 from pathlib import Path
 
 def episode_errors(episode, schema, schema_validator=None):
+    try:
+        from outcome import derive_outcome, expected_derived_fields
+    except ImportError:  # pragma: no cover - script invoked from repo root
+        from benchmarks.runner.outcome import derive_outcome, expected_derived_fields
     if not isinstance(episode, dict):
         return ["episode must be a JSON object; aggregate arrays are not episode files"]
     errors = [error.message for error in schema_validator(schema).iter_errors(episode)] if schema_validator else []
@@ -28,15 +32,30 @@ def episode_errors(episode, schema, schema_validator=None):
             errors.append(f"validator_outputs[{index}].result must be PASS, FAIL, or INVALID")
         else:
             results.append(result)
-    solved = bool(outputs) and len(results) == len(outputs) and all(result == "PASS" for result in results)
-    expected = {
-        "functional_solve": solved,
-        "false_completion": bool(episode.get("claimed_success")) and not solved,
-        "infrastructure_failure": "INVALID" in results,
-    }
+    expected = expected_derived_fields(outputs, episode.get("claimed_success"))
+    if expected is None:
+        errors.append("validator_outputs must be a non-empty list")
+        return errors
     for field, value in expected.items():
         if field in episode and episode[field] != value:
             errors.append(f"{field} must be {value!r} from validator outputs")
+    outcome = episode.get("outcome")
+    if outcome is not None:
+        if not isinstance(outcome, dict):
+            errors.append("outcome must be an object when present")
+        else:
+            recomputed = expected_derived_fields(outputs, episode.get("claimed_success"))
+            # outcome.components must reconstruct the same functional_solve
+            components = {
+                key: outcome.get(key)
+                for key in ("tests_passing", "finished_normally", "scope_ok", "infrastructure_failure")
+            }
+            if all(isinstance(value, bool) for value in components.values()):
+                check = derive_outcome(**components)
+                if check["functional_solve"] != expected["functional_solve"]:
+                    errors.append("outcome components disagree with validator outputs")
+                if outcome.get("functional_solve") != expected["functional_solve"]:
+                    errors.append("outcome.functional_solve must match validator outputs")
     return errors
 
 
@@ -49,13 +68,17 @@ def read_episode(path):
 
 
 def validate_episodes(episodes_dir, schema=None, schema_validator=None):
-    """Load and check every episode file. Returns (valid_episodes, invalid_count).
+    """Load and check every episode file.
 
     Every JSON file in this directory must be an episode object. Malformed,
     array-shaped, or schema-invalid files raise ValueError rather than being
     silently omitted. Infrastructure-failure episodes remain in the results
-    and are counted as invalid runs downstream.
+    and are counted as invalid runs downstream. ``schema`` is required:
+    calling without a schema would silently accept contradictory
+    derived-truth fields.
     """
+    if schema is None:
+        raise ValueError("episode schema is required for validation")
     episodes, invalid = [], 0
     for path in sorted(Path(episodes_dir).glob("*.json")):
         payload = read_episode(path)

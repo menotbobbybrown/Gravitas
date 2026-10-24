@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from fixtures import check_holdout, hidden_test_source, materialize
+from outcome import derive_outcome
 from run import GeminiRequestError, api_key, generate_content, load_manifest, load_task, result_path
 
 
@@ -168,20 +169,34 @@ def _run_episode_in_worktree(task, model, configuration, max_steps, worktree):
             error = "step limit reached"
         hidden_result = run_hidden_validation(worktree, task["task_id"])
         test_passed = hidden_result["passed"]
+        finished_normally = error is None
         validators = [
             {"criterion": "Hidden acceptance", "result": "PASS" if test_passed else "FAIL", "output": hidden_result["output"]},
             {"criterion": "Allowed write scope", "result": "FAIL" if scope_violation else "PASS", "output": "scope violation" if scope_violation else "within scope"},
+            {
+                "criterion": "Episode finished within step budget",
+                "result": "PASS" if finished_normally else "FAIL",
+                "output": "finished via finish tool" if finished_normally else (error or "step budget exceeded"),
+            },
         ]
     except (GeminiRequestError, subprocess.TimeoutExpired) as failure:
         error = str(failure)
         infrastructure_failure = True
+        finished_normally = False
         validators = [{"criterion": "Episode infrastructure", "result": "INVALID", "output": error}]
         test_passed = False
     except ValueError as failure:
         error = str(failure)
+        finished_normally = False
         validators = [{"criterion": "Agent protocol", "result": "FAIL", "output": error}]
         test_passed = False
-    solved = not error and test_passed and not scope_violation
+    outcome = derive_outcome(
+        tests_passing=test_passed,
+        finished_normally=finished_normally,
+        scope_ok=not scope_violation,
+        infrastructure_failure=infrastructure_failure,
+    )
+    solved = outcome["functional_solve"]
     return {
         "task_id": task["task_id"], "task_lane": LANE_BY_TASK[task["task_id"]],
         "repo_commit": task["commit"], "model": model, "effort": "eco", "configuration": configuration,
@@ -197,6 +212,7 @@ def _run_episode_in_worktree(task, model, configuration, max_steps, worktree):
         "false_completion": bool(final) and not solved, "premature_action": False,
         "scope_violation": scope_violation, "regression": False,
         "infrastructure_failure": infrastructure_failure,
+        "outcome": outcome,
         "notes": "Synthetic fixture plumbing result; not eligible for published model comparisons.",
     }
 

@@ -150,6 +150,52 @@ class BenchmarkRunnerTests(unittest.TestCase):
             ["episode must be a JSON object; aggregate arrays are not episode files"],
         )
 
+    def test_validate_episodes_requires_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                validate.validate_episodes(directory)
+
+    def test_report_rejects_contradictory_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            episodes_dir = root / "episodes"
+            episodes_dir.mkdir()
+            episode = {
+                "task_id": "t", "repo_commit": "abc", "configuration": "c",
+                "validator_outputs": [{"criterion": "AC1", "result": "FAIL"}],
+                "claimed_success": True, "functional_solve": True,
+                "false_completion": False,
+            }
+            (episodes_dir / "episode.json").write_text(
+                json.dumps(episode), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "benchmarks/cli.py"), "report",
+                 "--episodes", str(episodes_dir), "--out", str(root / "report")],
+                cwd=ROOT, capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Episode validation failed", result.stderr)
+
+    def test_report_rejects_empty_episodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            episodes_dir = root / "episodes"
+            episodes_dir.mkdir()
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "benchmarks/cli.py"), "report",
+                 "--episodes", str(episodes_dir), "--out", str(root / "report")],
+                cwd=ROOT, capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Episode validation failed", result.stderr)
+
+    def test_compare_skips_aggregate_artifacts(self):
+        episodes = [
+            [{"task_id": "A", "configuration": "base"}],
+            {"task_id": "A", "configuration": "base", "functional_solve": False},
+            {"task_id": "A", "configuration": "treated", "functional_solve": True},
+        ]
+        result = compare.compare(episodes, "base", "treated")
+        self.assertEqual(result["paired_episodes"], 1)
+
     def test_validator_allows_empty_directory_only_when_requested(self):
         with tempfile.TemporaryDirectory() as directory:
             command = [sys.executable, str(ROOT / "benchmarks/runner/validate.py"), "--episodes", directory]
@@ -354,6 +400,47 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertNotEqual(fixtures.hidden_test_source("BF-001"),
                             fixtures.hidden_test_source("BF-002"))
         self.assertEqual(len(fixtures.hidden_test_hash("BF-001")), 64)
+
+    def test_step_limit_with_passing_hidden_is_not_a_solve(self):
+        outcome = load("outcome", ROOT / "benchmarks/runner/outcome.py")
+        derived = outcome.derive_outcome(
+            tests_passing=True, finished_normally=False,
+            scope_ok=True, infrastructure_failure=False,
+        )
+        self.assertFalse(derived["functional_solve"])
+        validators = [
+            {"criterion": "Hidden acceptance", "result": "PASS"},
+            {"criterion": "Allowed write scope", "result": "PASS"},
+            {"criterion": "Episode finished within step budget", "result": "FAIL"},
+        ]
+        expected = outcome.expected_derived_fields(validators, claimed_success=False)
+        self.assertFalse(expected["functional_solve"])
+        self.assertFalse(expected["false_completion"])
+        self.assertFalse(expected["infrastructure_failure"])
+        episode = {
+            "task_id": "BF-001", "configuration": "c",
+            "validator_outputs": validators,
+            "claimed_success": False, "functional_solve": False,
+            "false_completion": False, "infrastructure_failure": False,
+            "outcome": derived,
+        }
+        self.assertEqual(validate.episode_errors(episode, {}), [])
+
+    def test_implementation_step_limit_episode_validates(self):
+        task = {"task_id": "BF-001", "commit": "fixture", "description": "Fix."}
+        action = '{"tool": "read", "path": "src/target.py"}'
+        with patch.object(implementation, "api_key", return_value="key"), \
+             patch.object(implementation, "generate_content", return_value=(action, {})), \
+             patch.object(implementation, "run_hidden_validation",
+                          return_value={"passed": True, "output": "hidden ok"}):
+            episode = implementation.run_episode(task, "model", "configuration", max_steps=2)
+        self.assertFalse(episode["functional_solve"])
+        self.assertIn("outcome", episode)
+        self.assertFalse(episode["outcome"]["finished_normally"])
+        self.assertTrue(episode["outcome"]["tests_passing"])
+        criteria = {v["criterion"]: v["result"] for v in episode["validator_outputs"]}
+        self.assertEqual(criteria.get("Episode finished within step budget"), "FAIL")
+        self.assertEqual(validate.episode_errors(episode, {}), [])
 
 
 if __name__ == "__main__":

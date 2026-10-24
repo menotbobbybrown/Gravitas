@@ -85,7 +85,8 @@ def cmd_report(args):
     try:
         from jsonschema import Draft7Validator
     except ImportError:
-        print("ERROR jsonschema is required: pip install -r benchmarks/runner/requirements.txt")
+        print("jsonschema is required: pip install -r benchmarks/runner/requirements.txt",
+              file=sys.stderr)
         return 2
 
     compare = _load_runner_module("compare").compare
@@ -99,7 +100,10 @@ def cmd_report(args):
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         episodes, invalid = validate_episodes(episodes_dir, schema, Draft7Validator)
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        print(f"ERROR invalid benchmark episodes: {error}")
+        print(f"Episode validation failed: {error}", file=sys.stderr)
+        return 2
+    if not episodes:
+        print(f"Episode validation failed: no valid episodes in {episodes_dir}", file=sys.stderr)
         return 2
     summary = aggregate(episodes)
     comparisons = []
