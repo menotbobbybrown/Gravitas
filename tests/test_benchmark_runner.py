@@ -401,6 +401,47 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             fixtures.hidden_test_source("BF-002"))
         self.assertEqual(len(fixtures.hidden_test_hash("BF-001")), 64)
 
+    def test_step_limit_with_passing_hidden_is_not_a_solve(self):
+        outcome = load("outcome", ROOT / "benchmarks/runner/outcome.py")
+        derived = outcome.derive_outcome(
+            tests_passing=True, finished_normally=False,
+            scope_ok=True, infrastructure_failure=False,
+        )
+        self.assertFalse(derived["functional_solve"])
+        validators = [
+            {"criterion": "Hidden acceptance", "result": "PASS"},
+            {"criterion": "Allowed write scope", "result": "PASS"},
+            {"criterion": "Episode finished within step budget", "result": "FAIL"},
+        ]
+        expected = outcome.expected_derived_fields(validators, claimed_success=False)
+        self.assertFalse(expected["functional_solve"])
+        self.assertFalse(expected["false_completion"])
+        self.assertFalse(expected["infrastructure_failure"])
+        episode = {
+            "task_id": "BF-001", "configuration": "c",
+            "validator_outputs": validators,
+            "claimed_success": False, "functional_solve": False,
+            "false_completion": False, "infrastructure_failure": False,
+            "outcome": derived,
+        }
+        self.assertEqual(validate.episode_errors(episode, {}), [])
+
+    def test_implementation_step_limit_episode_validates(self):
+        task = {"task_id": "BF-001", "commit": "fixture", "description": "Fix."}
+        action = '{"tool": "read", "path": "src/target.py"}'
+        with patch.object(implementation, "api_key", return_value="key"), \
+             patch.object(implementation, "generate_content", return_value=(action, {})), \
+             patch.object(implementation, "run_hidden_validation",
+                          return_value={"passed": True, "output": "hidden ok"}):
+            episode = implementation.run_episode(task, "model", "configuration", max_steps=2)
+        self.assertFalse(episode["functional_solve"])
+        self.assertIn("outcome", episode)
+        self.assertFalse(episode["outcome"]["finished_normally"])
+        self.assertTrue(episode["outcome"]["tests_passing"])
+        criteria = {v["criterion"]: v["result"] for v in episode["validator_outputs"]}
+        self.assertEqual(criteria.get("Episode finished within step budget"), "FAIL")
+        self.assertEqual(validate.episode_errors(episode, {}), [])
+
 
 if __name__ == "__main__":
     unittest.main()
